@@ -447,6 +447,264 @@ begin
   values (v_order.id, 'customer', v_body, clock_timestamp());
 end $$;
 
+-- ---------------------------------------------------------------- staff: stock for an order
+-- What the order needs at confirm time: pig per size line, add-on items, freebies.
+create or replace function reserve_order_stock(p_order_id uuid) returns void
+language plpgsql set search_path = public as $$
+declare
+  v_short text;
+begin
+  create temp table order_needs on commit drop as
+  select x.item_id, sum(x.qty) as qty
+  from (
+    select s.inventory_item_id as item_id, oi.qty::numeric as qty
+    from order_items oi
+    join product_sizes s on s.id = oi.size_id
+    where oi.order_id = p_order_id and s.inventory_item_id is not null
+    union all
+    select a.inventory_item_id, oi.qty::numeric
+    from order_items oi
+    cross join lateral jsonb_array_elements(oi.add_ons) chosen
+    join add_ons a on a.id = (chosen ->> 'id')::uuid
+    where oi.order_id = p_order_id and a.inventory_item_id is not null
+    union all
+    select f.inventory_item_id, f.qty
+    from order_freebies f
+    where f.order_id = p_order_id
+  ) x
+  group by x.item_id;
+
+  -- Locked in id order so two confirms cannot deadlock.
+  perform 1 from inventory_items
+  where id in (select item_id from order_needs)
+  order by id
+  for update;
+
+  select string_agg(format('%s (need %s, have %s)', i.name, trim_scale(n.qty),
+                           trim_scale(i.on_hand - i.reserved)), ', ' order by i.name)
+  into v_short
+  from order_needs n
+  join inventory_items i on i.id = n.item_id
+  where n.qty > i.on_hand - i.reserved;
+
+  if v_short is not null then
+    raise exception 'NOT_ENOUGH_STOCK: %', v_short;
+  end if;
+
+  update inventory_items i set reserved = i.reserved + n.qty
+  from order_needs n where n.item_id = i.id;
+
+  insert into stock_movements (item_id, reserved_change, reason, order_id, user_id)
+  select n.item_id, n.qty, 'reserve', p_order_id, auth.uid() from order_needs n;
+
+  drop table order_needs;
+end $$;
+
+-- Deduct or release works from what this order actually reserved, taken from stock_movements,
+-- so editing the catalog after confirming cannot unbalance the stock.
+create or replace function settle_order_stock(p_order_id uuid, p_reason movement_reason)
+returns void
+language plpgsql set search_path = public as $$
+declare
+  v_held record;
+begin
+  for v_held in
+    select m.item_id, sum(m.reserved_change) as qty
+    from stock_movements m
+    where m.order_id = p_order_id
+    group by m.item_id
+    having sum(m.reserved_change) > 0
+    order by m.item_id
+  loop
+    update inventory_items
+    set reserved = reserved - v_held.qty,
+        on_hand = on_hand - case when p_reason = 'deduct' then v_held.qty else 0 end
+    where id = v_held.item_id;
+
+    insert into stock_movements (item_id, on_hand_change, reserved_change, reason, order_id, user_id)
+    values (v_held.item_id, case when p_reason = 'deduct' then -v_held.qty else 0 end, -v_held.qty,
+            p_reason, p_order_id, auth.uid());
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------- staff: order status
+create or replace function set_order_status(p_order_id uuid, p_to order_status, p_note text default null)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_order orders;
+  v_from order_status;
+  v_note text := nullif(trim(p_note), '');
+  v_allowed boolean;
+begin
+  if not is_staff() then
+    raise exception 'FORBIDDEN: staff only';
+  end if;
+
+  select * into v_order from orders where id = p_order_id for update;
+  if not found then
+    raise exception 'ORDER_NOT_FOUND: no such order';
+  end if;
+  v_from := v_order.status;
+
+  v_allowed := case p_to
+    -- awaiting -> awaiting extends the deadline (PLAN 7.5, step 5).
+    when 'awaiting_downpayment' then v_from in ('new', 'awaiting_downpayment')
+    when 'confirmed' then v_from in ('new', 'awaiting_downpayment')
+    when 'roasting' then v_from = 'confirmed'
+    when 'ready' then v_from in ('roasting', 'out_for_delivery')
+    when 'out_for_delivery' then v_from = 'ready' and v_order.fulfillment = 'delivery'
+    when 'completed' then v_from in ('ready', 'out_for_delivery')
+    when 'cancelled' then v_from in ('new', 'awaiting_downpayment', 'confirmed', 'ready')
+    else false
+  end;
+  if not v_allowed then
+    raise exception 'BAD_TRANSITION: % to %', v_from, p_to;
+  end if;
+
+  if p_to = 'cancelled' and v_from = 'ready' and not is_admin() then
+    raise exception 'FORBIDDEN: only an admin can cancel a ready order';
+  end if;
+  if v_note is null and (p_to = 'cancelled' or (v_from = 'out_for_delivery' and p_to = 'ready')) then
+    raise exception 'REASON_REQUIRED: add a note';
+  end if;
+  if p_to = 'completed' and v_order.balance_due > 0 then
+    raise exception 'BALANCE_DUE: record the payment first';
+  end if;
+
+  if p_to = 'confirmed' then
+    perform reserve_order_stock(p_order_id);
+    v_order.stock_reserved := true;
+  elsif p_to = 'completed' then
+    perform settle_order_stock(p_order_id, 'deduct');
+    v_order.stock_reserved := false;
+  elsif p_to = 'cancelled' and v_order.stock_reserved then
+    perform settle_order_stock(p_order_id, 'release');
+    v_order.stock_reserved := false;
+  end if;
+
+  update orders
+  set status = p_to,
+      stock_reserved = v_order.stock_reserved,
+      downpayment_due_at = case
+        when p_to = 'awaiting_downpayment' then
+          now() + make_interval(hours => (select downpayment_deadline_hours from settings where id = 1))
+        else downpayment_due_at end,
+      cancel_reason = case when p_to = 'cancelled' then v_note else cancel_reason end
+  where id = p_order_id;
+
+  insert into order_status_history (order_id, from_status, to_status, user_id, note, created_at)
+  values (p_order_id, v_from, p_to, auth.uid(), v_note, clock_timestamp());
+end $$;
+
+-- ---------------------------------------------------------------- staff: payments and chat
+create or replace function record_payment(p_order_id uuid, p_type payment_type, p_amount numeric,
+                                          p_method payment_method, p_reference text default null,
+                                          p_note text default null)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_order orders;
+  v_paid numeric;
+begin
+  if not is_staff() then
+    raise exception 'FORBIDDEN: staff only';
+  end if;
+
+  select * into v_order from orders where id = p_order_id for update;
+  if not found then
+    raise exception 'ORDER_NOT_FOUND: no such order';
+  end if;
+  if v_order.status = 'cancelled' and p_type <> 'refund' then
+    raise exception 'ORDER_CLOSED: a cancelled order takes refunds only';
+  end if;
+  if p_amount is null or p_amount <= 0 or p_amount <> round(p_amount, 2) then
+    raise exception 'INVALID_AMOUNT: enter an amount above zero';
+  end if;
+
+  v_paid := v_order.amount_paid + case when p_type = 'refund' then -p_amount else p_amount end;
+  if v_paid > v_order.total then
+    raise exception 'OVERPAY: payment is more than the balance';
+  end if;
+  if v_paid < 0 then
+    raise exception 'REFUND_TOO_LARGE: refund is more than the amount paid';
+  end if;
+
+  insert into payments (order_id, type, amount, method, reference_no, note, received_by)
+  values (p_order_id, p_type, p_amount, p_method, nullif(trim(p_reference), ''),
+          nullif(trim(p_note), ''), auth.uid());
+
+  update orders set amount_paid = v_paid where id = p_order_id;
+end $$;
+
+create or replace function post_staff_message(p_order_id uuid, p_body text)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_body text := trim(p_body);
+begin
+  if not is_staff() then
+    raise exception 'FORBIDDEN: staff only';
+  end if;
+  if not exists (select 1 from orders where id = p_order_id) then
+    raise exception 'ORDER_NOT_FOUND: no such order';
+  end if;
+  if v_body is null or length(v_body) not between 1 and 1000 then
+    raise exception 'INVALID_MESSAGE: message must be 1 to 1000 characters';
+  end if;
+
+  insert into order_messages (order_id, sender, staff_id, body, created_at)
+  values (p_order_id, 'staff', auth.uid(), v_body, clock_timestamp());
+end $$;
+
+-- ---------------------------------------------------------------- staff: daily prep sheet
+create or replace function get_prep_sheet(p_date date)
+returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not is_staff() then
+    raise exception 'FORBIDDEN: staff only';
+  end if;
+
+  return (
+    with day_orders as (
+      select * from orders where scheduled_date = p_date and status <> 'cancelled'
+    ), day_items as (
+      select i.* from order_items i join day_orders o on o.id = i.order_id
+    )
+    select jsonb_build_object(
+      'date', p_date,
+      'pigs_by_size', (
+        select coalesce(jsonb_agg(jsonb_build_object('size_name', x.size_name, 'count', x.total)
+                                  order by x.size_name), '[]'::jsonb)
+        from (select size_name, sum(qty) as total from day_items
+              where size_id is not null group by size_name) x),
+      'kg_by_product', (
+        select coalesce(jsonb_agg(jsonb_build_object('product_name', x.product_name, 'kg', x.total)
+                                  order by x.product_name), '[]'::jsonb)
+        from (select product_name, sum(kg) as total from day_items
+              where kg is not null group by product_name) x),
+      'add_ons', (
+        select coalesce(jsonb_agg(jsonb_build_object('name', x.name, 'qty', x.total)
+                                  order by x.name), '[]'::jsonb)
+        from (select chosen ->> 'name' as name, sum(i.qty) as total
+              from day_items i cross join lateral jsonb_array_elements(i.add_ons) chosen
+              group by chosen ->> 'name') x),
+      'freebies', (
+        select coalesce(jsonb_agg(jsonb_build_object('item_name', x.item_name, 'qty', x.total)
+                                  order by x.item_name), '[]'::jsonb)
+        from (select f.item_name, sum(f.qty) as total
+              from order_freebies f join day_orders o on o.id = f.order_id
+              group by f.item_name) x),
+      'orders', (
+        select coalesce(jsonb_agg(jsonb_build_object(
+                 'order_no', o.order_no, 'customer_name', o.customer_name,
+                 'time_slot', o.time_slot, 'fulfillment', o.fulfillment, 'status', o.status,
+                 'balance_due', o.balance_due) order by o.time_slot, o.order_no), '[]'::jsonb)
+        from day_orders o))
+  );
+end $$;
+
 -- @@FUNCTIONS@@
 
 -- ---------------------------------------------------------------- table permissions
@@ -489,6 +747,13 @@ grant execute on function
   get_public_order(text, text),
   post_customer_message(text, text, text)
 to anon, authenticated;
+
+grant execute on function
+  set_order_status(uuid, order_status, text),
+  record_payment(uuid, payment_type, numeric, payment_method, text, text),
+  post_staff_message(uuid, text),
+  get_prep_sheet(date)
+to authenticated;
 
 -- @@GRANTS@@
 

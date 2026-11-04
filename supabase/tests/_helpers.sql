@@ -95,6 +95,21 @@ language sql as $$
   select (now() at time zone 'Asia/Manila')::date + days_ahead;
 $$;
 
+-- Places a pickup order and returns its id. Call as owner.
+create or replace function pg_temp.new_order(mobile text, day date, items jsonb, extra jsonb default '{}')
+returns uuid language plpgsql as $$
+declare
+  placed jsonb := place_order(pg_temp.order_json(mobile, day, items) || extra);
+begin
+  return (select id from orders where order_no = placed ->> 'order_no');
+end $$;
+
+-- "on_hand/reserved" of an inventory item, such as "4/1".
+create or replace function pg_temp.stock(item text) returns text
+language sql as $$
+  select trim_scale(on_hand) || '/' || trim_scale(reserved) from inventory_items where name = item;
+$$;
+
 -- Creates an auth user and sets its profile. Call as owner.
 create or replace function pg_temp.make_user(user_role user_role, active boolean) returns uuid
 language plpgsql as $$
