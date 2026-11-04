@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
 import { AppState, Platform } from 'react-native';
 
+import type { Database } from '@/types/database';
+
 import { resolveSupabaseUrl } from './supabase-url';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -17,7 +19,7 @@ if (!url || !anonKey) {
 const isNative = Platform.OS !== 'web';
 const devHostUri = isNative && __DEV__ ? Constants.expoConfig?.hostUri : null;
 
-export const supabase = createClient(resolveSupabaseUrl(url, devHostUri), anonKey, {
+export const supabase = createClient<Database>(resolveSupabaseUrl(url, devHostUri), anonKey, {
   auth: {
     // Web falls back to localStorage, the supabase-js default.
     storage: isNative ? AsyncStorage : undefined,

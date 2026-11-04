@@ -5,7 +5,7 @@ Claude Code: tick tasks as you finish them, and add notes for the owner under "D
 | Phase | Status | Notes |
 | --- | --- | --- |
 | 0 — Project setup | Done | Web and Android phone both show the shop name from the local database |
-| 1 — Database functions | Not started | 0001_init.sql and seed.sql provided |
+| 1 — Database functions | Done | All functions in PLAN §6, SQL tests pass after `db reset`, typed API ready |
 | 2 — Menu, product, cart | Not started | |
 | 3 — Checkout and tracking | Not started | |
 | 4 — Staff screens | Not started | |
@@ -30,12 +30,41 @@ Passing now: typecheck, lint, jest (6 tests), web and Android bundles, Home at 3
 
 Deferred from the PLAN §4 `_layout.tsx` note: toasts (Phase 4, first used there); fonts need no provider because §9 uses system fonts.
 
+## Phase 1 checklist
+
+- [x] `supabase/migrations/0002_functions.sql`: every function in §6, grants, storage bucket and policies
+- [x] SQL tests for §12 cases 1–10, plus admin functions, in `supabase/tests/`; `npm run db:test` passes after `db reset`
+- [x] Realtime enabled on `orders` and `order_messages`
+- [x] `src/types/database.ts` generated; typed wrappers in `src/api/*`; `src/lib/errors.ts`
+
+Also checked over real HTTP with real sign-in: customers are refused on order and stock tables; 6 customers racing for the last pig gives exactly 1 winner; 2 staff confirming the last pig cannot over-reserve; new orders reach staff through Realtime; only admins can upload photos.
+
+### Rule decisions made in Phase 1
+
+The spec was unclear or silent on these. They live in `0002_functions.sql`, so changing one needs a new migration, not a rebuild of the app. Owner: tell Claude Code if any should change.
+
+| Situation | What the app does now |
+| --- | --- |
+| Extending a downpayment deadline (§7.5 says re-enter the state, §7.4 has no such step) | awaiting → awaiting is allowed and resets the deadline |
+| Cancelling while roasting or out for delivery | Not allowed, exactly as §7.4 says |
+| Staff (not admin) cancelling a Ready order | `FORBIDDEN` |
+| Two freebie rules need the same item and stock covers only one | Highest priority first; the later rule is skipped whole as `OUT_OF_STOCK` |
+| Stacking off, and the top rule is out of stock | No freebie; it does not fall back to the next rule |
+| Cart has no date yet, and a freebie rule has date limits | The rule waits until a date is picked at checkout |
+| Same freebie item from several rules | One merged line; `rule_id` is null, `rule_name` lists the rules |
+| Which day a sale counts on in reports | The day it was completed. Payments count on the day received; orders on the day placed |
+| Rate limit of 3 orders per hour | Cancelled orders still count |
+| Refund after an order is completed | Allowed |
+| Same add-on sent twice in a cart line | Charged once |
+| Availability numbers when a day is overbooked | `pigs_left` and `kg_left` stop at 0 |
+
+Error codes added beyond the spec, all mapped in `src/lib/errors.ts`: `INVALID_NAME`, `INVALID_FULFILLMENT`, `INVALID_MESSAGE`, `INVALID_RANGE`, `INVALID_AMOUNT`, `INVALID_REASON`, `ORDER_NOT_FOUND`, `ITEM_NOT_FOUND`, `USER_NOT_FOUND`, `ORDER_CLOSED`, `REFUND_TOO_LARGE`.
+
 ## Needs action
 
-- **Add table grants in Phase 1 (blocks production).** Supabase projects created since 30 May 2026 no longer give `anon`/`authenticated` automatic access to new tables, and 0001_init.sql has no `GRANT` statements. Local works because `auto_expose_new_tables` defaults to true. On a new cloud project every table read would fail with error 42501. `0002_functions.sql` must add explicit grants, and `auto_expose_new_tables = false` should be set in `supabase/config.toml` so local matches production.
+- **Decide before launch: order lookup attempts.** `get_public_order` has no attempt limit in the spec. A lookup needs both the order number and the mobile number, but order numbers are sequential, so someone could try many guesses. Consider a limit in Phase 6.
 - **Expo Go version (for any new test phone).** The app uses SDK 58, but the Expo Go in the app stores is listed for SDK 57. Install Expo Go 58.0.5 from the APK link in the Expo release: https://github.com/expo/expo-go-releases/releases/download/Expo-Go-58.0.5/Expo-Go-58.0.5.apk
 - **Phone testing setup on this PC.** The "remi" Wi-Fi is set to Private, and the firewall rule "RJL Lechunan dev" allows ports 8081 and 54321 on Private networks.
-- **`npm run db:test` needs `psql`** on this PC. It is not installed yet; sort this out in Phase 1.
 
 ## Decisions needed from the owner
 
@@ -54,3 +83,4 @@ Deferred from the PLAN §4 `_layout.tsx` note: toasts (Phase 4, first used there
 2026-11-04 — Phase 0 code finished on Expo SDK 58. Local database not run because Docker is missing.
 2026-11-04 — Docker installed. Migration and seed load on Postgres 17; website reads the shop name from the real local database.
 2026-11-04 — Fixed a NativeWind colour scheme crash on web (`darkMode: 'class'`). Owner confirmed web and Android phone. Phase 0 done.
+2026-11-05 — Phase 1 done: `0002_functions.sql`, 5 SQL test files, typed API and error messages. Local now needs explicit grants, like a new cloud project (`auto_expose_new_tables = false`).
