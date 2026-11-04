@@ -705,7 +705,200 @@ begin
   );
 end $$;
 
--- @@FUNCTIONS@@
+-- ---------------------------------------------------------------- admin: stock
+create or replace function adjust_stock(p_item_id uuid, p_change numeric, p_reason movement_reason,
+                                        p_note text default null)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_item inventory_items;
+begin
+  if not is_admin() then
+    raise exception 'FORBIDDEN: admin only';
+  end if;
+  if p_reason not in ('purchase', 'spoilage', 'adjustment') then
+    raise exception 'INVALID_REASON: use purchase, spoilage or adjustment';
+  end if;
+  if p_change is null or p_change = 0
+     or (p_reason = 'purchase' and p_change < 0)
+     or (p_reason = 'spoilage' and p_change > 0) then
+    raise exception 'INVALID_AMOUNT: purchase adds stock, spoilage removes it';
+  end if;
+
+  select * into v_item from inventory_items where id = p_item_id for update;
+  if not found then
+    raise exception 'ITEM_NOT_FOUND: no such item';
+  end if;
+  if v_item.on_hand + p_change < v_item.reserved then
+    raise exception 'STOCK_BELOW_RESERVED: % reserved for orders', trim_scale(v_item.reserved);
+  end if;
+
+  update inventory_items set on_hand = on_hand + p_change where id = p_item_id;
+
+  insert into stock_movements (item_id, on_hand_change, reason, user_id, note)
+  values (p_item_id, p_change, p_reason, auth.uid(), nullif(trim(p_note), ''));
+end $$;
+
+create or replace function set_stock_count(p_item_id uuid, p_counted numeric, p_note text default null)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_item inventory_items;
+begin
+  if not is_admin() then
+    raise exception 'FORBIDDEN: admin only';
+  end if;
+  if p_counted is null or p_counted < 0 then
+    raise exception 'INVALID_AMOUNT: enter the counted quantity';
+  end if;
+
+  select * into v_item from inventory_items where id = p_item_id for update;
+  if not found then
+    raise exception 'ITEM_NOT_FOUND: no such item';
+  end if;
+  if p_counted < v_item.reserved then
+    raise exception 'STOCK_BELOW_RESERVED: % reserved for orders', trim_scale(v_item.reserved);
+  end if;
+
+  update inventory_items set on_hand = p_counted where id = p_item_id;
+
+  insert into stock_movements (item_id, on_hand_change, reason, user_id, note)
+  values (p_item_id, p_counted - v_item.on_hand, 'count', auth.uid(), nullif(trim(p_note), ''));
+end $$;
+
+-- ---------------------------------------------------------------- admin: reports
+-- Completed orders with the Manila day they were completed. A sale counts on that day.
+create or replace function completed_sales()
+returns table (order_id uuid, total numeric, day date)
+language sql stable set search_path = public as $$
+  select o.id, o.total, (h.created_at at time zone 'Asia/Manila')::date
+  from orders o
+  join order_status_history h on h.order_id = o.id and h.to_status = 'completed'
+  where o.status = 'completed';
+$$;
+
+create or replace function get_dashboard(p_date date)
+returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_settings settings;
+begin
+  if not is_admin() then
+    raise exception 'FORBIDDEN: admin only';
+  end if;
+
+  select * into v_settings from settings where id = 1;
+
+  return jsonb_build_object(
+    'date', p_date,
+    'orders_by_status', (
+      select coalesce(jsonb_object_agg(x.status, x.total), '{}'::jsonb)
+      from (select status, count(*) as total from orders
+            where scheduled_date = p_date group by status) x),
+    'sales', (select coalesce(sum(c.total), 0) from completed_sales() c where c.day = p_date),
+    'downpayments', (
+      select coalesce(sum(p.amount), 0) from payments p
+      where p.type = 'downpayment' and (p.paid_at at time zone 'Asia/Manila')::date = p_date),
+    'overdue_downpayments', (
+      select coalesce(jsonb_agg(jsonb_build_object(
+               'id', o.id, 'order_no', o.order_no, 'customer_name', o.customer_name,
+               'customer_mobile', o.customer_mobile, 'downpayment_due_at', o.downpayment_due_at)
+               order by o.downpayment_due_at), '[]'::jsonb)
+      from orders o
+      where o.status = 'awaiting_downpayment' and o.downpayment_due_at < now()),
+    'low_stock', (
+      select coalesce(jsonb_agg(jsonb_build_object(
+               'id', i.id, 'name', i.name, 'unit', i.unit, 'available', i.on_hand - i.reserved,
+               'reorder_level', i.reorder_level) order by i.name), '[]'::jsonb)
+      from inventory_items i
+      where i.is_active and i.on_hand - i.reserved <= i.reorder_level),
+    'capacity', (
+      select jsonb_agg(jsonb_build_object(
+               'day', g::date,
+               'pigs_booked', coalesce(b.pigs, 0),
+               'max_pigs', coalesce(c.max_pigs, v_settings.default_max_pigs_per_day),
+               'kg_booked', coalesce(b.kg, 0),
+               'max_kg', coalesce(c.max_kg, v_settings.default_max_kg_per_day),
+               'is_closed', coalesce(c.is_closed, false)) order by g)
+      from generate_series(p_date, p_date + 6, interval '1 day') g
+      left join daily_capacity c on c.date = g::date
+      left join lateral (
+        select sum(o.pig_count) as pigs, sum(o.total_kg) as kg from orders o
+        where o.scheduled_date = g::date and o.status <> 'cancelled'
+      ) b on true));
+end $$;
+
+create or replace function report_sales(p_from date, p_to date)
+returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not is_admin() then
+    raise exception 'FORBIDDEN: admin only';
+  end if;
+  if p_from is null or p_to is null or p_to < p_from or p_to - p_from >= 366 then
+    raise exception 'INVALID_RANGE: at most 366 days per report';
+  end if;
+
+  return jsonb_build_object(
+    'days', (
+      select jsonb_agg(jsonb_build_object(
+               'day', d.day,
+               'orders', (select count(*) from orders o
+                          where (o.created_at at time zone 'Asia/Manila')::date = d.day),
+               'sales', (select coalesce(sum(c.total), 0) from completed_sales() c where c.day = d.day),
+               'downpayments', pay.downpayments,
+               'cod_collected', pay.cod_collected,
+               'refunds', pay.refunds,
+               'cancellations', (select count(*) from order_status_history h
+                                 where h.to_status = 'cancelled'
+                                   and (h.created_at at time zone 'Asia/Manila')::date = d.day))
+               order by d.day)
+      from (select g::date as day from generate_series(p_from, p_to, interval '1 day') g) d
+      cross join lateral (
+        select coalesce(sum(p.amount) filter (where p.type = 'downpayment'), 0) as downpayments,
+               coalesce(sum(p.amount) filter (where p.type = 'cod_balance'), 0) as cod_collected,
+               coalesce(sum(p.amount) filter (where p.type = 'refund'), 0) as refunds
+        from payments p
+        where (p.paid_at at time zone 'Asia/Manila')::date = d.day
+      ) pay),
+    'products', (
+      select coalesce(jsonb_agg(jsonb_build_object(
+               'product_name', x.product_name, 'size_name', x.size_name, 'qty', x.qty, 'kg', x.kg,
+               'revenue', x.revenue) order by x.revenue desc, x.product_name), '[]'::jsonb)
+      from (
+        select i.product_name, i.size_name,
+               sum(i.qty) filter (where i.size_id is not null) as qty,
+               sum(i.kg) as kg, sum(i.line_total) as revenue
+        from order_items i
+        join completed_sales() c on c.order_id = i.order_id
+        where c.day between p_from and p_to
+        group by i.product_name, i.size_name
+      ) x));
+end $$;
+
+-- ---------------------------------------------------------------- admin: staff accounts
+create or replace function set_staff(p_user_id uuid, p_full_name text, p_role user_role, p_is_active boolean)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  v_name text := trim(p_full_name);
+begin
+  if not is_admin() then
+    raise exception 'FORBIDDEN: admin only';
+  end if;
+  if p_user_id = auth.uid() and (p_role <> 'admin' or not p_is_active) then
+    raise exception 'SELF_LOCKOUT: you cannot remove your own admin access';
+  end if;
+  if v_name is null or length(v_name) not between 2 and 80 then
+    raise exception 'INVALID_NAME: name must be 2 to 80 characters';
+  end if;
+
+  update profiles set full_name = v_name, role = p_role, is_active = p_is_active
+  where id = p_user_id;
+  if not found then
+    raise exception 'USER_NOT_FOUND: no such user';
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------- table permissions
 -- Explicit, so behaviour does not depend on a project's "automatically expose new tables" setting.
@@ -755,7 +948,13 @@ grant execute on function
   get_prep_sheet(date)
 to authenticated;
 
--- @@GRANTS@@
+grant execute on function
+  adjust_stock(uuid, numeric, movement_reason, text),
+  set_stock_count(uuid, numeric, text),
+  get_dashboard(date),
+  report_sales(date, date),
+  set_staff(uuid, text, user_role, boolean)
+to authenticated;
 
 -- ---------------------------------------------------------------- storage
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
