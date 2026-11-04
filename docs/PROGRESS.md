@@ -6,7 +6,7 @@ Claude Code: tick tasks as you finish them, and add notes for the owner under "D
 | --- | --- | --- |
 | 0 — Project setup | Done | Web and Android phone both show the shop name from the local database |
 | 1 — Database functions | Done | All functions in PLAN §6, SQL tests pass after `db reset`, typed API ready |
-| 2 — Menu, product, cart | Not started | |
+| 2 — Menu, product, cart | In progress | All screens built and passing on web. Only the owner's phone check is left |
 | 3 — Checkout and tracking | Not started | |
 | 4 — Staff screens | Not started | |
 | 5 — Admin screens | Not started | |
@@ -60,6 +60,19 @@ The spec was unclear or silent on these. They live in `0002_functions.sql`, so c
 
 Error codes added beyond the spec, all mapped in `src/lib/errors.ts`: `INVALID_NAME`, `INVALID_FULFILLMENT`, `INVALID_MESSAGE`, `INVALID_RANGE`, `INVALID_AMOUNT`, `INVALID_REASON`, `ORDER_NOT_FOUND`, `ITEM_NOT_FOUND`, `USER_NOT_FOUND`, `ORDER_CLOSED`, `REFUND_TOO_LARGE`.
 
+## Phase 2 checklist
+
+- [x] Home, Menu, Product and Cart screens (§8.1) with the UI guidelines (§9)
+- [x] Cart store persisted with AsyncStorage; holds ids and amounts only, never prices
+- [x] `useQuote` calling `quote_cart`, debounced 300 ms; freebies as ₱0 lines; skipped freebies note
+- [x] Responsive: one column at 360 px, side-by-side columns on desktop
+- [x] Done when (web): Large + Chopping service + 2.5 kg chopped gives ₱13,575 with 2 sauce and 1 puso, in Chrome against the real database
+- [ ] Done when (Android): same flow on the owner's phone in Expo Go — **not yet tested on a phone**
+
+Checkout and Track are placeholder pages until Phase 3.
+
+Choices made: no photos yet, so products show a brand panel with an icon (upload real ones in Phase 5). A cart line that left the menu is marked "No longer available" and blocks checkout until removed. Its name shows as "An item in your cart", because the cart saves ids only.
+
 ## Needs action
 
 - **To build in Phase 4: admin changes freebies on one order (owner request).** From the order detail screen, the admin can add, remove or swap freebies on a single order, with stock updated to match if the order is already confirmed. Needs a new Postgres function. This is on top of the freebie rules in Admin → Freebies (Phase 5).
@@ -86,3 +99,4 @@ Error codes added beyond the spec, all mapped in `src/lib/errors.ts`: `INVALID_N
 2026-11-04 — Fixed a NativeWind colour scheme crash on web (`darkMode: 'class'`). Owner confirmed web and Android phone. Phase 0 done.
 2026-11-05 — Phase 1 done: `0002_functions.sql`, 5 SQL test files, typed API and error messages. Local now needs explicit grants, like a new cloud project (`auto_expose_new_tables = false`).
 2026-11-05 — Owner decisions: freebies fall back to the next rule with stock when stacking is off (migration 0003); admin can change freebies on a single order (to build in Phase 4).
+2026-11-05 — Phase 2 screens built and verified on web; waiting for the owner's phone check.

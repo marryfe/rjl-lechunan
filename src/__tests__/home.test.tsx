@@ -1,42 +1,59 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react-native';
 
 import Home from '../../app/index';
-import { supabase } from '@/lib/supabase';
+import { useMenu, useShopInfo } from '@/api/catalog';
 
-jest.mock('@/lib/supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('@/api/catalog', () => ({ useShopInfo: jest.fn(), useMenu: jest.fn() }));
+jest.mock('@/components/Screen', () => ({
+  Screen: ({ children }: { children: React.ReactNode }) => children,
+}));
+jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 
-function mockSettingsResponse(response: { data: unknown; error: unknown }) {
-  const single = jest.fn().mockResolvedValue(response);
-  const eq = jest.fn(() => ({ single }));
-  const select = jest.fn(() => ({ eq }));
-  (supabase.from as jest.Mock).mockReturnValue({ select });
-}
+const shop = (overrides: object) => (useShopInfo as jest.Mock).mockReturnValue(overrides);
+const shopData = {
+  store_name: 'Name From Database',
+  contact_mobile: '09170000000',
+  messenger_url: null,
+  pickup_address: null,
+};
 
-async function renderHome() {
-  // gcTime: Infinity stops React Query leaving a 5-minute cleanup timer running after the test.
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+beforeEach(() => {
+  (useMenu as jest.Mock).mockReturnValue({
+    data: {
+      products: [],
+      rules: [
+        {
+          id: 'r',
+          name: 'Rule From Database',
+          trigger: 'order_amount',
+          size_id: null,
+          start_date: null,
+          end_date: null,
+          is_active: true,
+        },
+      ],
+    },
   });
-  await render(
-    <QueryClientProvider client={client}>
-      <Home />
-    </QueryClientProvider>,
-  );
-}
+});
 
 describe('Home', () => {
-  it('shows the store name returned by the database', async () => {
-    mockSettingsResponse({ data: { store_name: 'Name From Database' }, error: null });
-    await renderHome();
-    expect(await screen.findByText('Name From Database')).toBeTruthy();
-    expect(supabase.from).toHaveBeenCalledWith('settings');
+  it('shows the shop name, freebies and contact from the database', async () => {
+    shop({ data: shopData, isPending: false, isError: false });
+    await render(<Home />);
+    expect(screen.getByText('Name From Database')).toBeTruthy();
+    expect(screen.getByText('Rule From Database')).toBeTruthy();
+    expect(screen.getByText('Call 09170000000')).toBeTruthy();
   });
 
-  it('shows an error with a retry button, and no store name, when the query fails', async () => {
-    mockSettingsResponse({ data: null, error: { message: 'connection refused' } });
-    await renderHome();
-    expect(await screen.findByText("We can't reach the shop right now.")).toBeTruthy();
+  it('hides the Messenger link until one is set', async () => {
+    shop({ data: shopData, isPending: false, isError: false });
+    await render(<Home />);
+    expect(screen.queryByText('Message us on Messenger')).toBeNull();
+  });
+
+  it('shows a retry button when the shop details fail to load', async () => {
+    shop({ isPending: false, isError: true, error: new Error('down'), refetch: jest.fn() });
+    await render(<Home />);
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
     expect(screen.queryByText('RJL Lechunan')).toBeNull();
   });
