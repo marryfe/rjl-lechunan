@@ -316,7 +316,7 @@ For the cart and the scheduled date, evaluate every active rule whose optional `
 | `order_amount` | `subtotal ≥ threshold` (before delivery fee) | rule item qty × 1 |
 | `promo_dates` | scheduled date within start–end | rule item qty × 1 |
 
-- If `settings.freebies_stack = false`, keep only the fired rule with the highest `priority` (ties: newest `created_at`, then lowest `id`).
+- If `settings.freebies_stack = false`, give only one rule: the fired rule with the highest `priority` that has stock (ties: newest `created_at`, then lowest `id`). If it is out of stock, move to the next fired rule.
 - A rule is **skipped** (listed in `skipped_freebies` with `OUT_OF_STOCK`) if any of its items has available stock (on_hand − reserved) below the needed qty. The cart shows "Freebie currently unavailable".
 - Same item from several rules → merged into one line in `order_freebies`.
 - Freebies appear in the cart and on the order as **₱0** lines.
@@ -558,6 +558,7 @@ Tasks
 - [ ] Staff login + guard; inactive account message.
 - [ ] Order queue with filters, search, counts, badges, Realtime toasts + sound.
 - [ ] Order detail: chat, record payment sheet, next-step buttons per §7.4, "Record & confirm", cancel with reason, history.
+- [ ] Admin only, on order detail: add, remove or swap the freebies on that one order, through a new Postgres function that keeps stock correct if the order is already confirmed.
 - [ ] Prep sheet with print view.
 
 Done when: the full order lifecycle in §12 manual checks works end to end between two browsers (customer and staff).

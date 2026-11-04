@@ -187,4 +187,40 @@ begin
   perform pg_temp.assert_error(format(stmt, jsonb_build_array(pg_temp.kg_line('Chopped Lechon', 2))), 'PRODUCT_UNAVAILABLE');
 end $$;
 
+do $$
+declare
+  d date := pg_temp.manila_day(20);
+  q jsonb;
+  cart jsonb := jsonb_build_array(pg_temp.size_line('Jumbo', 1), pg_temp.size_line('Large', 1));
+begin
+  -- stacking off: when the top rule is out of stock, the next rule with stock is given
+  perform pg_temp.as_owner();
+  update settings set freebies_stack = false;
+  update freebie_rules set priority = 10 where name = 'PHP 15,000 and up';
+  update freebie_rules set priority = 5 where name = 'Large/Jumbo bundle (Jumbo)';
+  update inventory_items set on_hand = 0 where name = 'Lechon paksiw pack';
+  perform pg_temp.as_anon();
+  q := quote_cart(cart, 'pickup', d);
+  perform pg_temp.assert_true(pg_temp.freebie_qty(q, 'Lechon paksiw pack') = 0, 'out of stock rule gives nothing');
+  perform pg_temp.assert_true(pg_temp.freebie_qty(q, 'Lechon sauce bottle') = 2, 'falls back to the next rule');
+  perform pg_temp.assert_true(pg_temp.freebie_qty(q, 'Puso tray') = 1, 'next rule given whole, once');
+  perform pg_temp.assert_eq(jsonb_array_length(q -> 'skipped_freebies')::text, '1', 'skipped rule still listed');
+
+  -- a rule with no items does not count as the freebie
+  perform pg_temp.as_owner();
+  insert into freebie_rules (name, trigger, threshold, priority) values ('Empty rule', 'order_amount', 1, 20);
+  perform pg_temp.as_anon();
+  q := quote_cart(cart, 'pickup', d);
+  perform pg_temp.assert_true(pg_temp.freebie_qty(q, 'Lechon sauce bottle') = 2, 'empty rule is passed over');
+
+  -- nothing left anywhere: no freebie, and every rule is listed as skipped
+  perform pg_temp.as_owner();
+  update inventory_items set on_hand = 0 where name = 'Lechon sauce bottle';
+  perform pg_temp.as_anon();
+  q := quote_cart(cart, 'pickup', d);
+  perform pg_temp.assert_eq(jsonb_array_length(q -> 'freebies')::text, '0', 'no stock anywhere gives nothing');
+  perform pg_temp.assert_eq(jsonb_array_length(q -> 'skipped_freebies')::text, '3', 'all rules listed as skipped');
+  perform pg_temp.as_owner();
+end $$;
+
 rollback;

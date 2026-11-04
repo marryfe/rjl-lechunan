@@ -49,7 +49,7 @@ The spec was unclear or silent on these. They live in `0002_functions.sql`, so c
 | Cancelling while roasting or out for delivery | Not allowed, exactly as §7.4 says |
 | Staff (not admin) cancelling a Ready order | `FORBIDDEN` |
 | Two freebie rules need the same item and stock covers only one | Highest priority first; the later rule is skipped whole as `OUT_OF_STOCK` |
-| Stacking off, and the top rule is out of stock | No freebie; it does not fall back to the next rule |
+| Stacking off, and the top rule is out of stock | **Owner decision:** the next rule with stock is given (`0003_freebie_fallback.sql`). No freebie only if every matching rule is out of stock |
 | Cart has no date yet, and a freebie rule has date limits | The rule waits until a date is picked at checkout |
 | Same freebie item from several rules | One merged line; `rule_id` is null, `rule_name` lists the rules |
 | Which day a sale counts on in reports | The day it was completed. Payments count on the day received; orders on the day placed |
@@ -62,6 +62,7 @@ Error codes added beyond the spec, all mapped in `src/lib/errors.ts`: `INVALID_N
 
 ## Needs action
 
+- **To build in Phase 4: admin changes freebies on one order (owner request).** From the order detail screen, the admin can add, remove or swap freebies on a single order, with stock updated to match if the order is already confirmed. Needs a new Postgres function. This is on top of the freebie rules in Admin → Freebies (Phase 5).
 - **Decide before launch: order lookup attempts.** `get_public_order` has no attempt limit in the spec. A lookup needs both the order number and the mobile number, but order numbers are sequential, so someone could try many guesses. Consider a limit in Phase 6.
 - **Expo Go version (for any new test phone).** The app uses SDK 58, but the Expo Go in the app stores is listed for SDK 57. Install Expo Go 58.0.5 from the APK link in the Expo release: https://github.com/expo/expo-go-releases/releases/download/Expo-Go-58.0.5/Expo-Go-58.0.5.apk
 - **Phone testing setup on this PC.** The "remi" Wi-Fi is set to Private, and the firewall rule "RJL Lechunan dev" allows ports 8081 and 54321 on Private networks.
@@ -84,3 +85,4 @@ Error codes added beyond the spec, all mapped in `src/lib/errors.ts`: `INVALID_N
 2026-11-04 — Docker installed. Migration and seed load on Postgres 17; website reads the shop name from the real local database.
 2026-11-04 — Fixed a NativeWind colour scheme crash on web (`darkMode: 'class'`). Owner confirmed web and Android phone. Phase 0 done.
 2026-11-05 — Phase 1 done: `0002_functions.sql`, 5 SQL test files, typed API and error messages. Local now needs explicit grants, like a new cloud project (`auto_expose_new_tables = false`).
+2026-11-05 — Owner decisions: freebies fall back to the next rule with stock when stacking is off (migration 0003); admin can change freebies on a single order (to build in Phase 4).
