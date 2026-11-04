@@ -2,6 +2,9 @@
 module.exports = {
   content: ['./app/**/*.{js,jsx,ts,tsx}', './src/**/*.{js,jsx,ts,tsx}'],
   presets: [require('nativewind/preset')],
+  // The app is light-only. The default, 'media', makes NativeWind throw on web when the stylesheet
+  // loads after the JavaScript: "Cannot manually set color scheme, as dark mode is type 'media'".
+  darkMode: 'class',
   theme: {
     extend: {
       // Placeholder palette until the owner supplies a logo (PLAN §9).
