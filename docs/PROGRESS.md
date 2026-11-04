@@ -4,7 +4,7 @@ Claude Code: tick tasks as you finish them, and add notes for the owner under "D
 
 | Phase | Status | Notes |
 | --- | --- | --- |
-| 0 — Project setup | In progress | All code done. Waiting on Docker to run the local database and pass the "Done when" check |
+| 0 — Project setup | Done | Web and Android phone both show the shop name from the local database |
 | 1 — Database functions | Not started | 0001_init.sql and seed.sql provided |
 | 2 — Menu, product, cart | Not started | |
 | 3 — Checkout and tracking | Not started | |
@@ -19,21 +19,22 @@ Claude Code: tick tasks as you finish them, and add notes for the owner under "D
 - [x] NativeWind, supabase-js, react-query, zustand + AsyncStorage, react-hook-form, zod, date-fns(-tz), ESLint + Prettier, jest-expo installed
 - [x] `src/lib/supabase.ts`, providers in `app/_layout.tsx`, `.env.example`, npm scripts
 - [x] `npx supabase init` done; 0001_init.sql and seed.sql unchanged (checksums match)
-- [ ] `npx supabase start && npx supabase db reset` works — **not run: Docker is not installed**
-- [x] Placeholder Home reads `settings.store_name` (tested against a stub API only, not a real database)
+- [x] `npx supabase start && npx supabase db reset` works (Postgres 17)
+- [x] Placeholder Home reads `settings.store_name` from the real local database
 - [x] `app.json` web output `single`, `public/_redirects`, `eas.json`, `ci.yml`
 - [x] PROGRESS.md entries
-- [ ] Done when: web and Android show "RJL Lechunan" from the local DB — **not yet verified**
+- [x] Done when (web): `npm run web` shows "RJL Lechunan" from the local DB
+- [x] Done when (Android): Expo Go on the owner's phone shows "RJL Lechunan" from the local DB
 
-Passing now: typecheck, lint, jest (6 tests), expo-doctor (20/20), web and Android bundles, Home at 360 px in Chrome.
+Passing now: typecheck, lint, jest (6 tests), web and Android bundles, Home at 360 px in Chrome against the real database. Customer (anon) access can read the catalog, cannot see a real order, and cannot change `settings`.
 
 Deferred from the PLAN §4 `_layout.tsx` note: toasts (Phase 4, first used there); fonts need no provider because §9 uses system fonts.
 
 ## Needs action
 
-- **Install Docker Desktop (blocks Phase 0 and Phase 1).** WSL is not enabled on this PC. In PowerShell as Administrator run `wsl --install`, restart, then install Docker Desktop.
 - **Add table grants in Phase 1 (blocks production).** Supabase projects created since 30 May 2026 no longer give `anon`/`authenticated` automatic access to new tables, and 0001_init.sql has no `GRANT` statements. Local works because `auto_expose_new_tables` defaults to true. On a new cloud project every table read would fail with error 42501. `0002_functions.sql` must add explicit grants, and `auto_expose_new_tables = false` should be set in `supabase/config.toml` so local matches production.
-- **Expo Go version.** The app uses SDK 58, but the Expo Go in the app stores is listed for SDK 57. Install Expo Go 58.0.5 from the APK link in the Expo release: https://github.com/expo/expo-go-releases/releases/download/Expo-Go-58.0.5/Expo-Go-58.0.5.apk
+- **Expo Go version (for any new test phone).** The app uses SDK 58, but the Expo Go in the app stores is listed for SDK 57. Install Expo Go 58.0.5 from the APK link in the Expo release: https://github.com/expo/expo-go-releases/releases/download/Expo-Go-58.0.5/Expo-Go-58.0.5.apk
+- **Phone testing setup on this PC.** The "remi" Wi-Fi is set to Private, and the firewall rule "RJL Lechunan dev" allows ports 8081 and 54321 on Private networks.
 - **`npm run db:test` needs `psql`** on this PC. It is not installed yet; sort this out in Phase 1.
 
 ## Decisions needed from the owner
@@ -51,3 +52,5 @@ Deferred from the PLAN §4 `_layout.tsx` note: toasts (Phase 4, first used there
 <!-- yyyy-mm-dd — what was done -->
 
 2026-11-04 — Phase 0 code finished on Expo SDK 58. Local database not run because Docker is missing.
+2026-11-04 — Docker installed. Migration and seed load on Postgres 17; website reads the shop name from the real local database.
+2026-11-04 — Fixed a NativeWind colour scheme crash on web (`darkMode: 'class'`). Owner confirmed web and Android phone. Phase 0 done.
