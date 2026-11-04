@@ -58,6 +58,43 @@ begin
     json_build_object('sub', user_id, 'role', 'authenticated')::text, true);
 end $$;
 
+-- Cart line for a whole lechon size, optionally with add-ons by name.
+create or replace function pg_temp.size_line(size_name text, qty int, add_ons text[] default '{}')
+returns jsonb language sql as $$
+  select jsonb_build_object(
+    'product_id', s.product_id, 'size_id', s.id, 'qty', qty,
+    'add_on_ids', coalesce(
+      (select jsonb_agg(a.id) from add_ons a
+       where a.product_id = s.product_id and a.name = any(add_ons)), '[]'::jsonb))
+  from product_sizes s where s.name = size_name;
+$$;
+
+-- Cart line for a kilo item.
+create or replace function pg_temp.kg_line(product_name text, kg numeric) returns jsonb
+language sql as $$
+  select jsonb_build_object('product_id', p.id, 'kg', kg) from products p where p.name = product_name;
+$$;
+
+-- Quantity of one freebie item in a quote, or 0.
+create or replace function pg_temp.freebie_qty(quote jsonb, item text) returns numeric
+language sql as $$
+  select coalesce(sum((f ->> 'qty')::numeric), 0)
+  from jsonb_array_elements(quote -> 'freebies') f where f ->> 'item_name' = item;
+$$;
+
+-- A valid place_order payload for pickup.
+create or replace function pg_temp.order_json(mobile text, day date, items jsonb) returns jsonb
+language sql as $$
+  select jsonb_build_object(
+    'customer_name', 'Juan Dela Cruz', 'customer_mobile', mobile, 'fulfillment', 'pickup',
+    'scheduled_date', day, 'time_slot', '09:00-11:00', 'items', items);
+$$;
+
+create or replace function pg_temp.manila_day(days_ahead int) returns date
+language sql as $$
+  select (now() at time zone 'Asia/Manila')::date + days_ahead;
+$$;
+
 -- Creates an auth user and sets its profile. Call as owner.
 create or replace function pg_temp.make_user(user_role user_role, active boolean) returns uuid
 language plpgsql as $$
