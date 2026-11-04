@@ -1,0 +1,6 @@
+dist
+.expo
+assets
+supabase
+src/types/database.ts
+*.md
