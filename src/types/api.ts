@@ -10,6 +10,43 @@ export type PaymentMethod = Enums['payment_method'];
 export type MovementReason = Enums['movement_reason'];
 export type UserRole = Enums['user_role'];
 
+type Tables = Database['public']['Tables'];
+
+export type ShopInfo = Pick<
+  Tables['settings']['Row'],
+  'store_name' | 'contact_mobile' | 'messenger_url' | 'pickup_address'
+>;
+
+export type MenuSize = Pick<
+  Tables['product_sizes']['Row'],
+  'id' | 'name' | 'approx_weight_kg' | 'serves' | 'price' | 'is_active' | 'sort_order'
+>;
+export type MenuAddOn = Pick<Tables['add_ons']['Row'], 'id' | 'name' | 'price' | 'is_active'>;
+export type MenuCategory = Pick<Tables['categories']['Row'], 'id' | 'name' | 'sort_order'>;
+
+export type MenuProduct = Pick<
+  Tables['products']['Row'],
+  | 'id'
+  | 'name'
+  | 'description'
+  | 'photo_path'
+  | 'sell_type'
+  | 'price_per_kg'
+  | 'min_kg'
+  | 'kg_step'
+  | 'is_active'
+  | 'sort_order'
+> & {
+  categories: MenuCategory | null;
+  product_sizes: MenuSize[];
+  add_ons: MenuAddOn[];
+};
+
+export type FreebieRule = Pick<
+  Tables['freebie_rules']['Row'],
+  'id' | 'name' | 'trigger' | 'size_id' | 'start_date' | 'end_date' | 'is_active'
+>;
+
 export type AvailabilityReason = 'CLOSED' | 'TOO_SOON' | 'TOO_FAR' | 'FULL';
 
 export type AvailabilityDay = {

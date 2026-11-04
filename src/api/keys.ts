@@ -1,7 +1,8 @@
 import type { CartItem, FulfillmentType } from '@/types/api';
 
 export const keys = {
-  storeName: ['settings', 'store_name'] as const,
+  shopInfo: ['settings', 'shop-info'] as const,
+  menu: ['menu'] as const,
   availability: (from: string, to: string) => ['availability', from, to] as const,
   quote: (items: CartItem[], fulfillment: FulfillmentType, date: string | null) =>
     ['quote', items, fulfillment, date] as const,
